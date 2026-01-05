@@ -18,6 +18,40 @@ import {
 export const networkService = new NetworkService(); // Exported for direct access if needed
 export const audioService = new AudioService();
 
+// --- Binary Helpers (High Performance) ---
+
+/**
+ * Converts a Float32Array directly to a Base64 string representing the raw bytes.
+ * Much faster and smaller than CSV serialization.
+ */
+function float32ToBase64(buffer: Float32Array): string {
+  const bytes = new Uint8Array(buffer.buffer);
+  let binary = '';
+  const len = bytes.byteLength;
+  const chunkSize = 8192; // Chunk size to avoid stack overflow in String.fromCharCode
+
+  for (let i = 0; i < len; i += chunkSize) {
+    const chunk = bytes.subarray(i, Math.min(i + chunkSize, len));
+    // @ts-ignore - spread operator on typed array works in modern environments
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
+}
+
+/**
+ * Decodes a Base64 string back to a Float32Array.
+ */
+function base64ToFloat32(base64: string): Float32Array {
+  const binary = atob(base64);
+  const len = binary.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  // Create a view on the buffer (assuming same endianness, standard for Web Audio)
+  return new Float32Array(bytes.buffer);
+}
+
 interface AppState {
   // --- State ---
   myId: string;
@@ -155,7 +189,8 @@ export const useAppStore = create<AppState>((set, get) => ({
               onAudioChunkReceived(data, myId);
             }
 
-            const serialized = Array.from(data).map(n => n.toFixed(4)).join(',');
+            // OPTIMIZATION: Convert Float32Array buffer to Base64
+            const serialized = float32ToBase64(data);
             
             networkService.broadcast({
               id: crypto.randomUUID(),
@@ -253,7 +288,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         // 1. Play Audio (if not from me)
         if (senderId !== myId) {
           const payload = event.payload as AudioChunkPayload;
-          const floatArray = new Float32Array(payload.data.split(',').map(Number));
+          
+          // OPTIMIZATION: Decode Base64 directly to Float32Array
+          const floatArray = base64ToFloat32(payload.data);
           
           // IF I am NOT the Host, simply play it (Conversation mode).
           // IF I AM the Host, play it AND send to Gemini.

@@ -78,7 +78,7 @@ export interface TranslationEvent<T = any> {
 // Payload Specific Interfaces
 
 export interface AudioChunkPayload {
-  data: string; // Base64 encoded audio or Float32Array serialized
+  data: string; // Base64 encoded string of the raw Float32Array buffer
   sampleRate: number;
   sequenceId: number;
 }

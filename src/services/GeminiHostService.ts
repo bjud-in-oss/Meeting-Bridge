@@ -22,8 +22,11 @@ Your task is to translate incoming speech from ${source} to ${target}.
 - If the input is silence or noise, output nothing.
 `;
 
-// --- Helpers for Audio Encoding ---
+// --- Helpers for Audio Encoding (Gemini Protocol) ---
 
+/**
+ * Converts Float32Array (-1.0 to 1.0) to Int16Array for Gemini Input.
+ */
 function floatTo16BitPCM(input: Float32Array): Int16Array {
   const output = new Int16Array(input.length);
   for (let i = 0; i < input.length; i++) {
@@ -33,12 +36,19 @@ function floatTo16BitPCM(input: Float32Array): Int16Array {
   return output;
 }
 
+/**
+ * Standard Base64 encoding for ArrayBuffer.
+ */
 function base64Encode(buffer: ArrayBuffer): string {
   let binary = '';
   const bytes = new Uint8Array(buffer);
   const len = bytes.byteLength;
-  for (let i = 0; i < len; i++) {
-    binary += String.fromCharCode(bytes[i]);
+  const chunkSize = 8192;
+  
+  for (let i = 0; i < len; i += chunkSize) {
+    const chunk = bytes.subarray(i, Math.min(i + chunkSize, len));
+    // @ts-ignore
+    binary += String.fromCharCode(...chunk);
   }
   return btoa(binary);
 }
@@ -108,9 +118,6 @@ export class GeminiHostService implements IGeminiService {
 
   public stopLiveSession(): void {
     if (this.session) {
-      // There isn't a strict 'close' method on the session object in the SDK documentation provided, 
-      // but usually closing the socket or letting it get garbage collected is key. 
-      // The instructions say "use session.close() to close the connection".
       try {
          // @ts-ignore - Assuming close exists based on prompt guidelines
          this.session.close(); 
@@ -125,12 +132,10 @@ export class GeminiHostService implements IGeminiService {
   public pushAudio(data: Float32Array): void {
     if (!this.isConnected || !this.session) return;
 
-    // Convert Float32 -> Int16 -> Base64
+    // Convert Float32 -> Int16 -> Base64 for Gemini API consumption
     const pcmData = floatTo16BitPCM(data);
     const base64Audio = base64Encode(pcmData.buffer);
 
-    // Send to Gemini
-    // Using promise-based send to prevent race conditions as per guidelines
     this.session.sendRealtimeInput({
       media: {
         mimeType: 'audio/pcm;rate=16000',
@@ -158,30 +163,15 @@ export class GeminiHostService implements IGeminiService {
     const serverContent = message.serverContent;
     
     // 1. Handle Audio Output (The Translation)
-    // The server returns modelTurn with audio parts
     const base64Audio = serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
     
     if (base64Audio) {
-      // Broadcast translated audio to everyone
-      // We assume the data coming back is PCM 24kHz (default for Gemini)
-      // The consumers (AudioService) need to handle this.
+      // Gemini sends audio as PCM (typically Int16).
+      // We must convert this to Float32 to match the format our Peers expect (AudioChunkPayload).
+      const float32Data = this.decodeBase64ToFloat32(base64Audio);
       
-      // We need to convert Base64 back to a format our Event system expects.
-      // Our AudioChunkPayload expects 'data' to be serialized numbers or base64.
-      // Let's decode the base64 to Float32Array locally? 
-      // Or just pass the base64 string to the network to save bandwidth?
-      // Our AudioService.playAudioQueue takes Float32Array. 
-      // The NetworkService serialized Float32Array to CSV string in useAppStore.
-      // To keep it compatible, we should convert this PCM Int16/24 back to Float32 CSV 
-      // OR update the store to handle Base64.
-      
-      // OPTIMIZATION: Sending Base64 over the wire is better than CSV text.
-      // Ideally we update the store to handle both.
-      // For now, let's decode to Float32 to match the existing simplistic contract in useAppStore
-      // so we don't break the existing AudioService/Store logic in this step.
-      
-      const float32 = this.decodeBase64ToFloat32(base64Audio);
-      const serialized = Array.from(float32).map(n => n.toFixed(4)).join(',');
+      // Re-encode as Base64 of the Float32 buffer for P2P broadcast
+      const serialized = this.encodeFloat32ToBase64(float32Data);
 
       this.broadcastCallback({
         id: crypto.randomUUID(),
@@ -198,10 +188,6 @@ export class GeminiHostService implements IGeminiService {
 
     // 2. Handle Turn Complete (Transcription)
     if (serverContent?.turnComplete) {
-       // Typically transcription comes via `modelTurn` text parts if configured,
-       // or explicit `outputTranscription` / `inputTranscription` fields in the message.
-       // The prompt guidelines mention: `serverContent.outputTranscription.text`.
-       
        if (serverContent.outputTranscription?.text) {
          this.broadcastCallback({
            id: crypto.randomUUID(),
@@ -218,10 +204,10 @@ export class GeminiHostService implements IGeminiService {
     }
   }
 
+  // Decodes Gemini's (Int16/Base64) output to Float32 for internal processing
   private decodeBase64ToFloat32(base64: string): Float32Array {
     const binary = atob(base64);
     const len = binary.length;
-    // Gemini output is likely Int16 Little Endian PCM
     const bytes = new Uint8Array(len);
     for (let i = 0; i < len; i++) {
       bytes[i] = binary.charCodeAt(i);
@@ -233,5 +219,20 @@ export class GeminiHostService implements IGeminiService {
       float32[i] = int16[i] / 32768.0;
     }
     return float32;
+  }
+
+  // Encodes Float32 to Base64 (Raw Bytes) for P2P Broadcast
+  private encodeFloat32ToBase64(buffer: Float32Array): string {
+    const bytes = new Uint8Array(buffer.buffer);
+    let binary = '';
+    const len = bytes.byteLength;
+    const chunkSize = 8192;
+    
+    for (let i = 0; i < len; i += chunkSize) {
+      const chunk = bytes.subarray(i, Math.min(i + chunkSize, len));
+      // @ts-ignore
+      binary += String.fromCharCode(...chunk);
+    }
+    return btoa(binary);
   }
 }
