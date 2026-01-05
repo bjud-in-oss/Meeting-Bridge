@@ -26,12 +26,15 @@ export class NetworkService implements INetworkService {
   }
 
   public async joinRoom(roomId: string): Promise<void> {
+    // Ensure clean state before joining
     if (this.room) {
-      console.warn('Already joined a room. Leaving current first.');
+      console.log('[P2P] Already in a room, leaving first...');
       this.leaveRoom();
     }
 
     try {
+      console.log(`[P2P] Joining room: ${roomId} with AppID: ${APP_ID}`);
+      
       // Initialize Trystero
       this.room = joinRoom({ appId: APP_ID }, roomId);
 
@@ -83,6 +86,7 @@ export class NetworkService implements INetworkService {
 
     } catch (error) {
       console.error('[P2P] Failed to join room:', error);
+      this.leaveRoom(); // Cleanup on fail
       throw error;
     }
   }
@@ -94,13 +98,19 @@ export class NetworkService implements INetworkService {
     }
 
     if (this.room) {
-      this.room.leave();
+      try {
+        this.room.leave();
+      } catch (e) {
+        console.warn('Error leaving room:', e);
+      }
       this.room = null;
       this.sendAction = null;
-      this.peers.clear();
-      this.peers.add(selfId); // Reset to just self
-      console.log('[P2P] Left room');
     }
+    
+    // Reset peers list to just self
+    this.peers.clear();
+    this.peers.add(selfId);
+    console.log('[P2P] Left room');
   }
 
   public broadcast(event: TranslationEvent): void {
