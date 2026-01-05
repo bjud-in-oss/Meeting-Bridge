@@ -14,33 +14,24 @@ import {
   ControlPayload
 } from '../types/schema';
 
-// Instantiate Services (Singletons for the app lifetime)
-export const networkService = new NetworkService(); // Exported for direct access if needed
+// Instantiate Services
+export const networkService = new NetworkService(); 
 export const audioService = new AudioService();
 
-// --- Binary Helpers (High Performance) ---
-
-/**
- * Converts a Float32Array directly to a Base64 string representing the raw bytes.
- * Much faster and smaller than CSV serialization.
- */
+// --- Binary Helpers ---
 function float32ToBase64(buffer: Float32Array): string {
   const bytes = new Uint8Array(buffer.buffer);
   let binary = '';
   const len = bytes.byteLength;
-  const chunkSize = 8192; // Chunk size to avoid stack overflow in String.fromCharCode
-
+  const chunkSize = 8192; 
   for (let i = 0; i < len; i += chunkSize) {
     const chunk = bytes.subarray(i, Math.min(i + chunkSize, len));
-    // @ts-ignore - spread operator on typed array works in modern environments
+    // @ts-ignore
     binary += String.fromCharCode(...chunk);
   }
   return btoa(binary);
 }
 
-/**
- * Decodes a Base64 string back to a Float32Array.
- */
 function base64ToFloat32(base64: string): Float32Array {
   const binary = atob(base64);
   const len = binary.length;
@@ -48,7 +39,6 @@ function base64ToFloat32(base64: string): Float32Array {
   for (let i = 0; i < len; i++) {
     bytes[i] = binary.charCodeAt(i);
   }
-  // Create a view on the buffer (assuming same endianness, standard for Web Audio)
   return new Float32Array(bytes.buffer);
 }
 
@@ -57,23 +47,31 @@ interface AppState {
   myId: string;
   isInitialized: boolean;
   isMicActive: boolean;
-  volumeLevel: number; // For visualization
+  volumeLevel: number;
   roomState: RoomState;
   transcripts: Array<TranscriptionPayload & { senderId: string; timestamp: number }>;
   
+  // Settings State
+  jitterBufferMs: number;
+  inputDeviceId: string;
+  outputDeviceId: string;
+
   // --- Actions ---
   initialize: (roomId: string, userName: string) => Promise<void>;
   toggleMic: () => void;
   setLanguageConfig: (config: LanguageConfig) => void;
   
+  // Settings Actions
+  setJitterBuffer: (ms: number) => void;
+  setInputDevice: (deviceId: string) => void;
+  setOutputDevice: (deviceId: string) => void;
+
   // Logic: Token Management
   requestTalkingStick: () => void;
   releaseTalkingStick: () => void;
   
-  // Internal Handlers (exposed for testing/manual triggering if needed)
+  // Internal
   handleIncomingEvent: (event: TranslationEvent, senderId: string) => void;
-  
-  // Hooks for Host Service
   onAudioChunkReceived: ((data: Float32Array, senderId: string) => void) | null;
   setAudioChunkListener: (cb: (data: Float32Array, senderId: string) => void) => void;
 }
@@ -85,6 +83,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   isMicActive: false,
   volumeLevel: 0,
   transcripts: [],
+  jitterBufferMs: 50,
+  inputDeviceId: 'default',
+  outputDeviceId: 'default',
+
   roomState: {
     roomId: '',
     hostId: '', 
@@ -101,7 +103,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   // --- Actions ---
 
   initialize: async (roomId: string, userName: string) => {
-    // 1. Setup Network Listeners
     networkService.onHostChanged((hostId) => {
       set((state) => ({
         roomState: { ...state.roomState, hostId }
@@ -137,9 +138,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       get().handleIncomingEvent(event, senderId);
     });
 
-    // 2. Setup Audio Listeners
     audioService.onVoiceActivity((isActive) => {
-      // Optional: Auto-request token logic here
+      // Optional auto logic
     });
     
     setInterval(() => {
@@ -148,7 +148,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     }, 100);
 
-    // 3. Connect Services
     await networkService.joinRoom(roomId);
     
     const myId = networkService.getMyId();
@@ -172,26 +171,39 @@ export const useAppStore = create<AppState>((set, get) => ({
     }));
   },
 
+  setJitterBuffer: (ms: number) => {
+    audioService.setJitterLatency(ms / 1000);
+    set({ jitterBufferMs: ms });
+  },
+
+  setInputDevice: (deviceId: string) => {
+    set({ inputDeviceId: deviceId });
+    // If mic is active, restart it with new device
+    const { isMicActive, toggleMic } = get();
+    if (isMicActive) {
+      toggleMic(); // Stop
+      setTimeout(() => toggleMic(), 200); // Restart
+    }
+  },
+
+  setOutputDevice: async (deviceId: string) => {
+    set({ outputDeviceId: deviceId });
+    await audioService.setOutputDevice(deviceId);
+  },
+
   toggleMic: async () => {
-    const { isMicActive, requestTalkingStick, releaseTalkingStick } = get();
+    const { isMicActive, requestTalkingStick, releaseTalkingStick, inputDeviceId } = get();
     
     if (!isMicActive) {
       try {
         await audioService.startCapture((data) => {
           const { roomState, myId, onAudioChunkReceived } = get();
           
-          // Only process audio if I am the speaker
           if (roomState.speakerId === myId) {
-            
-            // If I am Host, pipe directly to Gemini (don't broadcast my own raw audio to avoid loopback)
-            // Actually, for simplicity, I broadcast to guests, but also pipe to Gemini.
             if (onAudioChunkReceived) {
               onAudioChunkReceived(data, myId);
             }
-
-            // OPTIMIZATION: Convert Float32Array buffer to Base64
             const serialized = float32ToBase64(data);
-            
             networkService.broadcast({
               id: crypto.randomUUID(),
               type: EventType.AUDIO_CHUNK,
@@ -204,7 +216,7 @@ export const useAppStore = create<AppState>((set, get) => ({
               } as AudioChunkPayload
             });
           }
-        });
+        }, inputDeviceId !== 'default' ? inputDeviceId : undefined);
         
         set({ isMicActive: true });
         requestTalkingStick(); 
@@ -223,6 +235,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((state) => ({ 
       roomState: { ...state.roomState, languageConfig: config } 
     }));
+    // Broadcast config change if I'm host (or if we allow guests to change global config)
+    networkService.broadcast({
+      id: crypto.randomUUID(),
+      type: EventType.STATE_UPDATE,
+      senderId: get().myId,
+      timestamp: Date.now(),
+      payload: { ...get().roomState, languageConfig: config }
+    });
   },
 
   setAudioChunkListener: (cb) => {
@@ -236,46 +256,34 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (isHost) {
       const newRoomState = { ...roomState, speakerId: myId };
       set({ roomState: newRoomState });
-
       networkService.broadcast({
         id: crypto.randomUUID(),
         type: EventType.CONTROL_SIGNAL,
         senderId: myId,
         timestamp: Date.now(),
-        payload: {
-          signal: ControlSignal.GRANT_TOKEN,
-          targetPeerId: myId
-        } as ControlPayload
+        payload: { signal: ControlSignal.GRANT_TOKEN, targetPeerId: myId } as ControlPayload
       });
-
     } else {
       networkService.sendToPeer(roomState.hostId, {
         id: crypto.randomUUID(),
         type: EventType.CONTROL_SIGNAL,
         senderId: myId,
         timestamp: Date.now(),
-        payload: {
-          signal: ControlSignal.REQUEST_TOKEN,
-          targetPeerId: myId
-        } as ControlPayload
+        payload: { signal: ControlSignal.REQUEST_TOKEN, targetPeerId: myId } as ControlPayload
       });
     }
   },
 
   releaseTalkingStick: () => {
     const { myId, roomState } = get();
-    
     if (roomState.speakerId === myId) {
       set({ roomState: { ...roomState, speakerId: null } });
-
       networkService.broadcast({
         id: crypto.randomUUID(),
         type: EventType.CONTROL_SIGNAL,
         senderId: myId,
         timestamp: Date.now(),
-        payload: {
-          signal: ControlSignal.RELEASE_TOKEN
-        } as ControlPayload
+        payload: { signal: ControlSignal.RELEASE_TOKEN } as ControlPayload
       });
     }
   },
@@ -285,24 +293,14 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     switch (event.type) {
       case EventType.AUDIO_CHUNK:
-        // 1. Play Audio (if not from me)
         if (senderId !== myId) {
           const payload = event.payload as AudioChunkPayload;
-          
-          // OPTIMIZATION: Decode Base64 directly to Float32Array
           const floatArray = base64ToFloat32(payload.data);
           
-          // IF I am NOT the Host, simply play it (Conversation mode).
-          // IF I AM the Host, play it AND send to Gemini.
-          
           if (senderId === 'TRANSLATOR_BOT') {
-            // Always play bot audio with its specific sample rate (usually 24k)
             audioService.playAudioQueue(floatArray, payload.sampleRate || 24000);
           } else {
-            // User audio - play with specific sample rate (usually 16k)
             audioService.playAudioQueue(floatArray, payload.sampleRate || 16000);
-            
-            // If I am Host, intercept for Gemini
             if (onAudioChunkReceived) {
               onAudioChunkReceived(floatArray, senderId);
             }
@@ -312,30 +310,21 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       case EventType.CONTROL_SIGNAL:
         const payload = event.payload as ControlPayload;
-        
-        if (payload.signal === ControlSignal.REQUEST_TOKEN) {
-          if (myId === roomState.hostId) {
+        if (payload.signal === ControlSignal.REQUEST_TOKEN && myId === roomState.hostId) {
              const granteeId = payload.targetPeerId || senderId;
              const grantEvent: TranslationEvent = {
                id: crypto.randomUUID(),
                type: EventType.CONTROL_SIGNAL,
                senderId: myId,
                timestamp: Date.now(),
-               payload: {
-                 signal: ControlSignal.GRANT_TOKEN,
-                 targetPeerId: granteeId
-               } as ControlPayload
+               payload: { signal: ControlSignal.GRANT_TOKEN, targetPeerId: granteeId } as ControlPayload
              };
              networkService.broadcast(grantEvent);
              set({ roomState: { ...roomState, speakerId: granteeId } });
-          }
         }
-
         if (payload.signal === ControlSignal.GRANT_TOKEN) {
-          const newSpeakerId = payload.targetPeerId;
-          set({ roomState: { ...roomState, speakerId: newSpeakerId || null } });
+          set({ roomState: { ...roomState, speakerId: payload.targetPeerId || null } });
         }
-
         if (payload.signal === ControlSignal.RELEASE_TOKEN) {
           set({ roomState: { ...roomState, speakerId: null } });
         }
@@ -348,6 +337,13 @@ export const useAppStore = create<AppState>((set, get) => ({
             ...state.transcripts,
             { ...transPayload, senderId, timestamp: event.timestamp }
           ]
+        }));
+        break;
+
+      case EventType.STATE_UPDATE:
+        // Merge room state updates (like language config changes)
+        set((state) => ({
+            roomState: { ...state.roomState, ...event.payload }
         }));
         break;
     }

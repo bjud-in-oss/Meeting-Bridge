@@ -64,8 +64,9 @@ export interface INetworkService {
 export interface IAudioService {
   /**
    * Request microphone access and start processing.
+   * Can specify a deviceId.
    */
-  startCapture(onAudioData: (data: Float32Array) => void): Promise<void>;
+  startCapture(onAudioData: (data: Float32Array) => void, deviceId?: string): Promise<void>;
 
   /**
    * Stop microphone capture.
@@ -87,6 +88,21 @@ export interface IAudioService {
    * Get current input volume level (0-100) for UI visualization.
    */
   getVolumeLevel(): number;
+
+  /**
+   * Set the Jitter Buffer latency in seconds (e.g., 0.05 for 50ms).
+   */
+  setJitterLatency(seconds: number): void;
+
+  /**
+   * Get list of available audio input/output devices.
+   */
+  getDevices(): Promise<{ inputs: MediaDeviceInfo[], outputs: MediaDeviceInfo[] }>;
+
+  /**
+   * Set the audio output device (Speaker).
+   */
+  setOutputDevice(deviceId: string): Promise<void>;
 }
 
 /**
