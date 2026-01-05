@@ -24,10 +24,11 @@ const RoomJoiner: React.FC<RoomJoinerProps> = ({ onJoin }) => {
     if (roomId && name) {
       // Update URL without reload
       const url = new URL(window.location.href);
-      url.searchParams.set('room', roomId);
+      const cleanRoomId = roomId.trim().toUpperCase();
+      url.searchParams.set('room', cleanRoomId);
       window.history.pushState({}, '', url);
       
-      onJoin(roomId, name);
+      onJoin(cleanRoomId, name);
     }
   };
 

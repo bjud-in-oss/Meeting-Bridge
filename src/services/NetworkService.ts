@@ -35,8 +35,17 @@ export class NetworkService implements INetworkService {
     try {
       console.log(`[P2P] Joining room: ${roomId} with AppID: ${APP_ID}`);
       
-      // Initialize Trystero
-      this.room = joinRoom({ appId: APP_ID }, roomId);
+      // Initialize Trystero with explicit STUN servers
+      // This is crucial for peers to find each other through NAT/Firewalls
+      this.room = joinRoom({ 
+        appId: APP_ID,
+        rtcConfig: {
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:global.stun.twilio.com:3478' }
+          ]
+        }
+      }, roomId);
 
       // Initialize Data Channel
       const [send, get] = this.room.makeAction('event');
