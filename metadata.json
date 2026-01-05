@@ -1,0 +1,7 @@
+{
+  "name": "Copy of Meeting Translation",
+  "description": "Serverless Realtime Translation App using Trystero P2P and Gemini API.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
